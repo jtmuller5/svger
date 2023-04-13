@@ -1,62 +1,77 @@
 import sys
 import cv2
 import numpy as np
+import potrace
 import svgwrite
+import argparse
 
-def png_to_svg(input_file, output_file):
+
+def png_to_svg(input_file, output_file, output_size=None):
     # Read the input image
     img = cv2.imread(input_file)
 
     # Convert the image to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # Scale the image to fit within 24x24 pixels while maintaining aspect ratio
-    height, width = gray.shape
-    new_width, new_height = 24, 24
-    if width > height:
-        new_height = int(height * (24 / width))
+    if output_size:
+        new_width, new_height = output_size, output_size
     else:
-        new_width = int(width * (24 / height))
+        # Keep the original size
+        new_width, new_height = gray.shape[::-1]
+
+    # Scale the image to fit within the specified dimensions while maintaining aspect ratio
+    height, width = gray.shape
+    if width > height:
+        new_height = int(height * (new_width / width))
+    else:
+        new_width = int(width * (new_height / height))
 
     gray = cv2.resize(gray, (new_width, new_height), interpolation=cv2.INTER_AREA)
 
-    # Create a 24x24 white canvas and place the scaled image at the center
-    gray_padded = np.full((24, 24), 255, dtype=np.uint8)
-    y_offset = (24 - new_height) // 2
-    x_offset = (24 - new_width) // 2
-    gray_padded[y_offset:y_offset + new_height, x_offset:x_offset + new_width] = gray
+    # Threshold the image
+    _, bitmap = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY)
 
-    # Apply edge detection using the Canny algorithm
-    edges = cv2.Canny(gray_padded, 50, 150)
+    # Convert the bitmap to a potrace bitmap
+    potrace_bitmap = potrace.Bitmap(bitmap)
 
-    # Find contours
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Create a potrace path from the bitmap
+    path = potrace_bitmap.trace()
 
     # Create an SVG canvas
-    dwg = svgwrite.Drawing(output_file, size=('24px', '24px'), profile='tiny')
+    dwg = svgwrite.Drawing(output_file, size=(f'{output_size}px', f'{output_size}px'), profile='tiny')
 
-    # Loop through contours
-    for cnt in contours:
-        # Simplify the contour
-        epsilon = 0.001 * cv2.arcLength(cnt, True)
-        approx = cv2.approxPolyDP(cnt, epsilon, True)
+    # Loop through paths
+    for curve in path:
+        # Create a path element
+        path_element = dwg.path(d="", fill="black")
 
-        # Convert the contour points to SVG path
-        path_data = 'M' + ' L'.join(f'{point[0][0]},{point[0][1]}' for point in approx)
-        path_data += ' Z'
+        # Add the starting point (moveto)
+        start_x, start_y = curve.start_point.x, curve.start_point.y
+        path_element.push(f"M {start_x} {start_y}")
 
-        # Add the path to the SVG
-        dwg.add(dwg.path(d=path_data, fill='black'))
+        # Add the curve segments
+        for segment in curve.segments:
+            end_x, end_y = segment.end_point.x, segment.end_point.y
+            c1_x, c1_y = segment.end_point.x, segment.end_point.y
+            path_element.push(f"C {c1_x} {c1_y} {end_x} {end_y}")
 
-    # Save the SVG file
+        # Close the path (lineto)
+        path_element.push("Z")
+
+    # Add the path element to the SVG
+        dwg.add(path_element)
+# Save the SVG file
     dwg.save()
 
+
+
 if __name__ == '__main__':
-    if len(sys.argv) < 3:
-        print('Usage: python png_to_svg.py <input_png> <output_svg>')
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Convert a PNG image to an SVG icon')
+    parser.add_argument('input_png', help='Input PNG file path')
+    parser.add_argument('output_svg', help='Output SVG file path')
+    parser.add_argument('--size', type=int, help='Output icon size (width and height)')
 
-    input_file = sys.argv[1]
-    output_file = sys.argv[2]
+    args = parser.parse_args()
 
-    png_to_svg(input_file, output_file)
+    output_size = args.size if args.size else None
+    png_to_svg(args.input_png, args.output_svg, output_size)
